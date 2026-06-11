@@ -300,6 +300,34 @@
       font-size: 12px;
     }
 
+    .hover-line {
+      stroke: #1f2937;
+      stroke-width: 1.5;
+      stroke-dasharray: 4 4;
+      opacity: 0.45;
+      shape-rendering: crispEdges;
+    }
+
+    .tooltip-box {
+      fill: rgba(17, 24, 39, 0.92);
+      stroke: rgba(255, 255, 255, 0.18);
+      stroke-width: 1;
+    }
+
+    .tooltip-title,
+    .tooltip-text {
+      fill: #fff;
+      font-size: 12px;
+    }
+
+    .tooltip-title {
+      font-weight: 800;
+    }
+
+    .tooltip-text {
+      font-weight: 700;
+    }
+
     .empty {
       position: absolute;
       inset: 8px 10px 12px;
@@ -839,6 +867,7 @@
           weightC: thirdWeight,
           q1: quantile(rolling, 0.25),
           q3: quantile(rolling, 0.75),
+          mean: average(rolling),
           sampleCount: rolling.length
         });
       }
@@ -973,6 +1002,10 @@
       return sorted[lower] * (1 - weight) + sorted[upper] * weight;
     }
 
+    function average(values) {
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
     function drawChart(results) {
       els.chart.innerHTML = "";
       if (!results.length) {
@@ -986,8 +1019,8 @@
       const margin = { top: 28, right: 28, bottom: 72, left: 72 };
       const plotW = width - margin.left - margin.right;
       const plotH = height - margin.top - margin.bottom;
-      const minY = Math.min(...results.map((d) => d.q1));
-      const maxY = Math.max(...results.map((d) => d.q3));
+      const minY = Math.min(...results.flatMap((d) => [d.q1, d.q3, d.mean]));
+      const maxY = Math.max(...results.flatMap((d) => [d.q1, d.q3, d.mean]));
       const padding = Math.max(0.015, (maxY - minY) * 0.14);
       const yMin = Math.floor((minY - padding) * 100) / 100;
       const yMax = Math.ceil((maxY + padding) * 100) / 100;
@@ -1002,6 +1035,14 @@
         Object.entries(attrs || {}).forEach(([key, value]) => el.setAttribute(key, value));
         if (text != null) el.textContent = text;
         svg.appendChild(el);
+        return el;
+      }
+
+      function makeIn(parent, tag, attrs, text) {
+        const el = document.createElementNS(ns, tag);
+        Object.entries(attrs || {}).forEach(([key, value]) => el.setAttribute(key, value));
+        if (text != null) el.textContent = text;
+        parent.appendChild(el);
         return el;
       }
 
@@ -1041,6 +1082,70 @@
 
       make("text", { class: "tick-label", x: margin.left, y: height - margin.bottom + 44, "text-anchor": "start" }, `${ASSETS[els.assetB.value].label} ${xMax}% + ${ASSETS[els.assetC.value].label} ${results[0].weightC}%`);
       make("text", { class: "tick-label", x: width - margin.right, y: height - margin.bottom + 44, "text-anchor": "end" }, `${ASSETS[els.assetA.value].label} ${xMax}% + ${ASSETS[els.assetC.value].label} ${results[0].weightC}%`);
+
+      const hoverGroup = make("g", { style: "display: none; pointer-events: none;" });
+      const hoverLine = makeIn(hoverGroup, "line", { class: "hover-line", y1: margin.top, y2: height - margin.bottom });
+      const q1Dot = makeIn(hoverGroup, "circle", { r: 4, fill: "#1769aa" });
+      const q3Dot = makeIn(hoverGroup, "circle", { r: 4, fill: "#d1495b" });
+      const meanDot = makeIn(hoverGroup, "circle", { r: 4, fill: "#111827", stroke: "#fff", "stroke-width": 1.5 });
+      const tooltipWidth = 260;
+      const tooltipHeight = 96;
+      const tooltipBox = makeIn(hoverGroup, "rect", { class: "tooltip-box", width: tooltipWidth, height: tooltipHeight, rx: 6, ry: 6 });
+      const tooltipTitle = makeIn(hoverGroup, "text", { class: "tooltip-title" });
+      const tooltipQ1 = makeIn(hoverGroup, "text", { class: "tooltip-text" });
+      const tooltipQ3 = makeIn(hoverGroup, "text", { class: "tooltip-text" });
+      const tooltipMean = makeIn(hoverGroup, "text", { class: "tooltip-text" });
+      const overlay = make("rect", {
+        x: margin.left,
+        y: margin.top,
+        width: plotW,
+        height: plotH,
+        fill: "rgba(0, 0, 0, 0)",
+        "pointer-events": "all"
+      });
+
+      function updateHover(event) {
+        const rect = svg.getBoundingClientRect();
+        const svgX = (event.clientX - rect.left) * (width / rect.width);
+        const relative = Math.max(0, Math.min(1, (svgX - margin.left) / plotW));
+        const weightA = xMax > 0 ? Math.round(relative * xMax) : 0;
+        const point = results[weightA] || results.reduce((nearest, item) => Math.abs(item.weightA - weightA) < Math.abs(nearest.weightA - weightA) ? item : nearest, results[0]);
+        const xx = x(point.weightA);
+        const q1Y = y(point.q1);
+        const q3Y = y(point.q3);
+        const meanY = y(point.mean);
+        const boxX = Math.min(width - margin.right - tooltipWidth, Math.max(margin.left + 8, xx + 12));
+        const boxY = Math.min(height - margin.bottom - tooltipHeight - 8, Math.max(margin.top + 8, Math.min(q1Y, q3Y, meanY) - tooltipHeight - 12));
+
+        hoverGroup.style.display = "block";
+        hoverLine.setAttribute("x1", xx);
+        hoverLine.setAttribute("x2", xx);
+        q1Dot.setAttribute("cx", xx);
+        q1Dot.setAttribute("cy", q1Y);
+        q3Dot.setAttribute("cx", xx);
+        q3Dot.setAttribute("cy", q3Y);
+        meanDot.setAttribute("cx", xx);
+        meanDot.setAttribute("cy", meanY);
+        tooltipBox.setAttribute("x", boxX);
+        tooltipBox.setAttribute("y", boxY);
+        tooltipTitle.setAttribute("x", boxX + 12);
+        tooltipTitle.setAttribute("y", boxY + 22);
+        tooltipTitle.textContent = `${ASSETS[els.assetA.value].label} ${point.weightA}% / ${ASSETS[els.assetB.value].label} ${point.weightB}% / ${ASSETS[els.assetC.value].label} ${point.weightC}%`;
+        tooltipQ1.setAttribute("x", boxX + 12);
+        tooltipQ1.setAttribute("y", boxY + 46);
+        tooltipQ1.textContent = `Q1: ${formatPercent(point.q1)}`;
+        tooltipQ3.setAttribute("x", boxX + 12);
+        tooltipQ3.setAttribute("y", boxY + 66);
+        tooltipQ3.textContent = `Q3: ${formatPercent(point.q3)}`;
+        tooltipMean.setAttribute("x", boxX + 12);
+        tooltipMean.setAttribute("y", boxY + 86);
+        tooltipMean.textContent = `Mean: ${formatPercent(point.mean)}`;
+      }
+
+      overlay.addEventListener("pointermove", updateHover);
+      overlay.addEventListener("pointerleave", () => {
+        hoverGroup.style.display = "none";
+      });
     }
 
     function makeWeightTicks(maxWeight) {

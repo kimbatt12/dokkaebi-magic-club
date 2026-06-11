@@ -494,6 +494,8 @@
       emptyState: document.getElementById("emptyState")
     };
 
+    let renderTimer = 0;
+
     function init() {
       const keys = Object.keys(ASSETS);
       keys.forEach((key) => {
@@ -507,11 +509,11 @@
 
       els.assetA.addEventListener("change", handleAssetChange);
       els.assetB.addEventListener("change", handleAssetChange);
-      els.years.addEventListener("input", renderFromInputs);
+      els.years.addEventListener("input", () => scheduleRender());
       els.weightSlider.addEventListener("input", () => setWeight(els.weightSlider.value));
       els.weightInput.addEventListener("input", () => setWeight(els.weightInput.value));
-      els.rebalancing.addEventListener("change", renderFromInputs);
-      els.monthlyContributions.addEventListener("change", renderFromInputs);
+      els.rebalancing.addEventListener("change", () => scheduleRender());
+      els.monthlyContributions.addEventListener("change", () => scheduleRender());
       els.refreshButton.addEventListener("click", loadAllData);
       window.addEventListener("resize", () => {
         if (state.lastResults.length) drawChart(state.lastResults);
@@ -528,7 +530,7 @@
         otherSelect.value = replacement;
       }
       updateWeightLabels();
-      renderFromInputs();
+      scheduleRender();
     }
 
     function setWeight(rawValue) {
@@ -537,6 +539,15 @@
       els.weightInput.value = value;
       updateWeightLabels();
       updateSelectedSummary();
+    }
+
+    function scheduleRender(prefixMessage) {
+      if (renderTimer) clearTimeout(renderTimer);
+      setStatus("Calculating...", "info");
+      renderTimer = setTimeout(() => {
+        renderTimer = 0;
+        renderFromInputs(prefixMessage);
+      }, 20);
     }
 
     function updateWeightLabels() {
@@ -722,15 +733,19 @@
         throw new Error(`Common monthly data is insufficient. ${years}-year rolling returns need at least ${monthsNeeded + 1} months.`);
       }
 
+      const buyHoldPrefixes = monthlyContributions ? buildBuyHoldContributionPrefixes(aligned) : null;
       const results = [];
       for (let weightA = 0; weightA <= 100; weightA += 1) {
         const wa = weightA / 100;
         const wb = 1 - wa;
+        const rebalancedPrefixes = monthlyContributions && rebalanceMonthly
+          ? buildRebalancedContributionPrefixes(aligned, wa, wb)
+          : null;
         const rolling = [];
         for (let end = monthsNeeded; end < aligned.length; end += 1) {
           const start = end - monthsNeeded;
           const annualizedReturn = monthlyContributions
-            ? calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly)
+            ? calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes)
             : calculateLumpSumWindowCagr(aligned, start, end, wa, wb, years, rebalanceMonthly);
           if (Number.isFinite(annualizedReturn)) rolling.push(annualizedReturn);
         }
@@ -772,57 +787,66 @@
       return portfolio;
     }
 
-    function calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly) {
+    function calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes) {
       const terminalValue = rebalanceMonthly
-        ? calculateRebalancedContributionTerminal(aligned, start, end, wa, wb)
-        : calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb);
+        ? calculateRebalancedContributionTerminal(start, end, rebalancedPrefixes)
+        : calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb, buyHoldPrefixes);
       const monthCount = end - start;
-      const cashflows = Array(monthCount).fill(-1);
-      cashflows.push(terminalValue);
-      const monthlyRate = calculatePeriodicIrr(cashflows);
+      const monthlyRate = calculateMonthlyContributionIrr(terminalValue, monthCount);
       return Number.isFinite(monthlyRate) ? Math.pow(1 + monthlyRate, 12) - 1 : NaN;
     }
 
-    function calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb) {
-      let quantityA = 0;
-      let quantityB = 0;
-      for (let i = start; i < end; i += 1) {
-        quantityA += wa / aligned[i].a;
-        quantityB += wb / aligned[i].b;
+    function buildBuyHoldContributionPrefixes(aligned) {
+      const inverseA = [0];
+      const inverseB = [0];
+      for (let i = 0; i < aligned.length; i += 1) {
+        inverseA.push(inverseA[i] + 1 / aligned[i].a);
+        inverseB.push(inverseB[i] + 1 / aligned[i].b);
       }
-      return quantityA * aligned[end].a + quantityB * aligned[end].b;
+      return { inverseA, inverseB };
     }
 
-    function calculateRebalancedContributionTerminal(aligned, start, end, wa, wb) {
-      let portfolio = 0;
-      for (let i = start; i < end; i += 1) {
-        portfolio += 1;
+    function calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb, prefixes) {
+      const quantityA = prefixes.inverseA[end] - prefixes.inverseA[start];
+      const quantityB = prefixes.inverseB[end] - prefixes.inverseB[start];
+      return wa * aligned[end].a * quantityA + wb * aligned[end].b * quantityB;
+    }
+
+    function buildRebalancedContributionPrefixes(aligned, wa, wb) {
+      const cumulative = [1];
+      const inverseCumulative = [0];
+      for (let i = 0; i < aligned.length - 1; i += 1) {
         const returnA = aligned[i + 1].a / aligned[i].a - 1;
         const returnB = aligned[i + 1].b / aligned[i].b - 1;
-        portfolio *= 1 + wa * returnA + wb * returnB;
+        cumulative.push(cumulative[i] * (1 + wa * returnA + wb * returnB));
+        inverseCumulative.push(inverseCumulative[i] + 1 / cumulative[i]);
       }
-      return portfolio;
+      return { cumulative, inverseCumulative };
     }
 
-    function calculatePeriodicIrr(cashflows) {
+    function calculateRebalancedContributionTerminal(start, end, prefixes) {
+      return prefixes.cumulative[end] * (prefixes.inverseCumulative[end] - prefixes.inverseCumulative[start]);
+    }
+
+    function calculateMonthlyContributionIrr(terminalValue, monthCount) {
       let low = -0.95;
       let high = 10;
-      let npvLow = calculateNpv(cashflows, low);
-      let npvHigh = calculateNpv(cashflows, high);
+      let fvLow = calculateContributionFutureValue(low, monthCount) - terminalValue;
+      let fvHigh = calculateContributionFutureValue(high, monthCount) - terminalValue;
       let expandCount = 0;
-      while (npvLow * npvHigh > 0 && expandCount < 8) {
+      while (fvLow * fvHigh > 0 && expandCount < 8) {
         high *= 2;
-        npvHigh = calculateNpv(cashflows, high);
+        fvHigh = calculateContributionFutureValue(high, monthCount) - terminalValue;
         expandCount += 1;
       }
-      if (!Number.isFinite(npvLow) || !Number.isFinite(npvHigh) || npvLow * npvHigh > 0) return NaN;
+      if (!Number.isFinite(fvLow) || !Number.isFinite(fvHigh) || fvLow * fvHigh > 0) return NaN;
       for (let i = 0; i < 80; i += 1) {
         const mid = (low + high) / 2;
-        const npvMid = calculateNpv(cashflows, mid);
-        if (Math.abs(npvMid) < 1e-9) return mid;
-        if (npvLow * npvMid > 0) {
+        const fvMid = calculateContributionFutureValue(mid, monthCount) - terminalValue;
+        if (Math.abs(fvMid) < 1e-9) return mid;
+        if (fvLow * fvMid > 0) {
           low = mid;
-          npvLow = npvMid;
+          fvLow = fvMid;
         } else {
           high = mid;
         }
@@ -830,8 +854,10 @@
       return (low + high) / 2;
     }
 
-    function calculateNpv(cashflows, rate) {
-      return cashflows.reduce((sum, cashflow, index) => sum + cashflow / Math.pow(1 + rate, index), 0);
+    function calculateContributionFutureValue(rate, monthCount) {
+      if (Math.abs(rate) < 1e-10) return monthCount;
+      const growth = Math.pow(1 + rate, monthCount);
+      return (1 + rate) * (growth - 1) / rate;
     }
 
     function alignMonthly(assetA, assetB) {

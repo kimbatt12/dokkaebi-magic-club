@@ -370,7 +370,7 @@
     <header>
       <div>
         <h1>Investment Simulator</h1>
-        <p class="subtitle">Compares the IQR of annualized N-year rolling returns for monthly rebalanced portfolios since January 2006.</p>
+        <p class="subtitle">Compares the IQR of annualized N-year rolling returns for two-asset portfolios since January 2006.</p>
       </div>
     </header>
 
@@ -405,6 +405,14 @@
             <label class="checkbox-row">
               <input id="rebalancing" type="checkbox">
               Rebalancing
+            </label>
+          </div>
+
+          <div class="field">
+            <label for="monthlyContributions">Investment timing</label>
+            <label class="checkbox-row">
+              <input id="monthlyContributions" type="checkbox">
+              Monthly contributions
             </label>
           </div>
 
@@ -477,6 +485,7 @@
       weightAValue: document.getElementById("weightAValue"),
       weightBValue: document.getElementById("weightBValue"),
       rebalancing: document.getElementById("rebalancing"),
+      monthlyContributions: document.getElementById("monthlyContributions"),
       refreshButton: document.getElementById("refreshButton"),
       status: document.getElementById("status"),
       dataSummary: document.getElementById("dataSummary"),
@@ -502,6 +511,7 @@
       els.weightSlider.addEventListener("input", () => setWeight(els.weightSlider.value));
       els.weightInput.addEventListener("input", () => setWeight(els.weightInput.value));
       els.rebalancing.addEventListener("change", renderFromInputs);
+      els.monthlyContributions.addEventListener("change", renderFromInputs);
       els.refreshButton.addEventListener("click", loadAllData);
       window.addEventListener("resize", () => {
         if (state.lastResults.length) drawChart(state.lastResults);
@@ -677,14 +687,16 @@
 
       try {
         const isRebalanced = els.rebalancing.checked;
-        const results = calculateIqrSeries(assetA, assetB, years.value, isRebalanced);
+        const isMonthlyContribution = els.monthlyContributions.checked;
+        const results = calculateIqrSeries(assetA, assetB, years.value, isRebalanced, isMonthlyContribution);
         state.lastResults = results;
         drawChart(results);
         updateSelectedSummary();
         const range = commonMonthlyRange(assetA, assetB);
         const modeText = state.dataMode === "fallback" ? "embedded monthly data" : "live data";
         const portfolioRule = isRebalanced ? "monthly rebalanced" : "buy-and-hold";
-        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label}: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, ${portfolioRule}, using ${modeText}.`;
+        const timingRule = isMonthlyContribution ? "monthly contributions, annualized IRR" : "lump sum, annualized CAGR";
+        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label}: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, ${portfolioRule}, ${timingRule}, using ${modeText}.`;
         setStatus(prefixMessage ? `${prefixMessage} ${message}` : message, state.dataMode === "fallback" ? "warn" : "good");
       } catch (error) {
         state.lastResults = [];
@@ -703,7 +715,7 @@
       return { ok: true, value };
     }
 
-    function calculateIqrSeries(assetA, assetB, years, rebalanceMonthly) {
+    function calculateIqrSeries(assetA, assetB, years, rebalanceMonthly, monthlyContributions) {
       const aligned = alignMonthly(assetA, assetB);
       const monthsNeeded = years * 12;
       if (aligned.length <= monthsNeeded) {
@@ -717,11 +729,10 @@
         const rolling = [];
         for (let end = monthsNeeded; end < aligned.length; end += 1) {
           const start = end - monthsNeeded;
-          const totalReturn = rebalanceMonthly
-            ? calculateRebalancedWindowReturn(aligned, start, end, wa, wb)
-            : calculateBuyHoldWindowReturn(aligned, start, end, wa, wb);
-          const cagr = Math.pow(totalReturn, 1 / years) - 1;
-          if (Number.isFinite(cagr)) rolling.push(cagr);
+          const annualizedReturn = monthlyContributions
+            ? calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly)
+            : calculateLumpSumWindowCagr(aligned, start, end, wa, wb, years, rebalanceMonthly);
+          if (Number.isFinite(annualizedReturn)) rolling.push(annualizedReturn);
         }
         if (!rolling.length) throw new Error("N-year rolling samples are insufficient.");
 
@@ -734,6 +745,13 @@
         });
       }
       return results;
+    }
+
+    function calculateLumpSumWindowCagr(aligned, start, end, wa, wb, years, rebalanceMonthly) {
+      const totalReturn = rebalanceMonthly
+        ? calculateRebalancedWindowReturn(aligned, start, end, wa, wb)
+        : calculateBuyHoldWindowReturn(aligned, start, end, wa, wb);
+      return Math.pow(totalReturn, 1 / years) - 1;
     }
 
     function calculateBuyHoldWindowReturn(aligned, start, end, wa, wb) {
@@ -752,6 +770,68 @@
         portfolio *= 1 + wa * returnA + wb * returnB;
       }
       return portfolio;
+    }
+
+    function calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly) {
+      const terminalValue = rebalanceMonthly
+        ? calculateRebalancedContributionTerminal(aligned, start, end, wa, wb)
+        : calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb);
+      const monthCount = end - start;
+      const cashflows = Array(monthCount).fill(-1);
+      cashflows.push(terminalValue);
+      const monthlyRate = calculatePeriodicIrr(cashflows);
+      return Number.isFinite(monthlyRate) ? Math.pow(1 + monthlyRate, 12) - 1 : NaN;
+    }
+
+    function calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb) {
+      let quantityA = 0;
+      let quantityB = 0;
+      for (let i = start; i < end; i += 1) {
+        quantityA += wa / aligned[i].a;
+        quantityB += wb / aligned[i].b;
+      }
+      return quantityA * aligned[end].a + quantityB * aligned[end].b;
+    }
+
+    function calculateRebalancedContributionTerminal(aligned, start, end, wa, wb) {
+      let portfolio = 0;
+      for (let i = start; i < end; i += 1) {
+        portfolio += 1;
+        const returnA = aligned[i + 1].a / aligned[i].a - 1;
+        const returnB = aligned[i + 1].b / aligned[i].b - 1;
+        portfolio *= 1 + wa * returnA + wb * returnB;
+      }
+      return portfolio;
+    }
+
+    function calculatePeriodicIrr(cashflows) {
+      let low = -0.95;
+      let high = 10;
+      let npvLow = calculateNpv(cashflows, low);
+      let npvHigh = calculateNpv(cashflows, high);
+      let expandCount = 0;
+      while (npvLow * npvHigh > 0 && expandCount < 8) {
+        high *= 2;
+        npvHigh = calculateNpv(cashflows, high);
+        expandCount += 1;
+      }
+      if (!Number.isFinite(npvLow) || !Number.isFinite(npvHigh) || npvLow * npvHigh > 0) return NaN;
+      for (let i = 0; i < 80; i += 1) {
+        const mid = (low + high) / 2;
+        const npvMid = calculateNpv(cashflows, mid);
+        if (Math.abs(npvMid) < 1e-9) return mid;
+        if (npvLow * npvMid > 0) {
+          low = mid;
+          npvLow = npvMid;
+        } else {
+          high = mid;
+        }
+      }
+      return (low + high) / 2;
+    }
+
+    function calculateNpv(cashflows, rate) {
+      return cashflows.reduce((sum, cashflow, index) => sum + cashflow / Math.pow(1 + rate, index), 0);
     }
 
     function alignMonthly(assetA, assetB) {
@@ -874,7 +954,8 @@
       const selected = state.lastResults[Number(els.weightInput.value)];
       if (!selected) return;
       const rule = els.rebalancing.checked ? "Monthly rebalanced" : "Buy & hold";
-      els.chartTitle.textContent = `${ASSETS[els.assetA.value].label} ${selected.weightA}% / ${ASSETS[els.assetB.value].label} ${selected.weightB}% [${rule}]: Q1 ${formatPercent(selected.q1)}, Q3 ${formatPercent(selected.q3)}`;
+      const timing = els.monthlyContributions.checked ? "Monthly contributions" : "Lump sum";
+      els.chartTitle.textContent = `${ASSETS[els.assetA.value].label} ${selected.weightA}% / ${ASSETS[els.assetB.value].label} ${selected.weightB}% [${rule}, ${timing}]: Q1 ${formatPercent(selected.q1)}, Q3 ${formatPercent(selected.q3)}`;
       drawChart(state.lastResults);
     }
 

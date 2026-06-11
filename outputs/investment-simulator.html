@@ -153,7 +153,7 @@
 
     .weights {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
     }
 
@@ -370,7 +370,7 @@
     <header>
       <div>
         <h1>Investment Simulator</h1>
-        <p class="subtitle">Compares the IQR of annualized N-year rolling returns for two-asset portfolios since April 1999.</p>
+        <p class="subtitle">Compares the IQR of annualized N-year rolling returns for two- or three-asset portfolios since April 1999.</p>
       </div>
     </header>
 
@@ -388,15 +388,20 @@
           </div>
 
           <div class="field">
+            <label for="assetC">Third asset</label>
+            <select id="assetC"></select>
+          </div>
+
+          <div class="field">
             <label for="years">Rolling period N years</label>
             <input id="years" type="number" min="1" max="30" step="1" value="10" inputmode="numeric">
           </div>
 
           <div class="field">
-            <label for="weightSlider">Weight</label>
+            <label for="weightSlider">Third asset</label>
             <div class="weight-row">
-              <input id="weightSlider" type="range" min="0" max="100" step="1" value="50">
-              <input id="weightInput" type="number" min="0" max="100" step="1" value="50">
+              <input id="weightSlider" type="range" min="0" max="100" step="1" value="0">
+              <input id="weightInput" type="number" min="0" max="100" step="1" value="0">
             </div>
           </div>
 
@@ -423,7 +428,11 @@
             </div>
             <div class="metric">
               <div class="name" id="weightBLabel">QQQ</div>
-              <div class="value" id="weightBValue">50%</div>
+              <div class="value" id="weightBValue">0-100%</div>
+            </div>
+            <div class="metric">
+              <div class="name" id="weightCLabel">Gold</div>
+              <div class="value" id="weightCValue">0%</div>
             </div>
           </div>
 
@@ -477,13 +486,16 @@
     const els = {
       assetA: document.getElementById("assetA"),
       assetB: document.getElementById("assetB"),
+      assetC: document.getElementById("assetC"),
       years: document.getElementById("years"),
       weightSlider: document.getElementById("weightSlider"),
       weightInput: document.getElementById("weightInput"),
       weightALabel: document.getElementById("weightALabel"),
       weightBLabel: document.getElementById("weightBLabel"),
+      weightCLabel: document.getElementById("weightCLabel"),
       weightAValue: document.getElementById("weightAValue"),
       weightBValue: document.getElementById("weightBValue"),
+      weightCValue: document.getElementById("weightCValue"),
       rebalancing: document.getElementById("rebalancing"),
       monthlyContributions: document.getElementById("monthlyContributions"),
       refreshButton: document.getElementById("refreshButton"),
@@ -501,14 +513,18 @@
       keys.forEach((key) => {
         const optionA = new Option(ASSETS[key].label, key);
         const optionB = new Option(ASSETS[key].label, key);
+        const optionC = new Option(ASSETS[key].label, key);
         els.assetA.add(optionA);
         els.assetB.add(optionB);
+        els.assetC.add(optionC);
       });
       els.assetA.value = "SPY";
       els.assetB.value = "QQQ";
+      els.assetC.value = "GOLD";
 
       els.assetA.addEventListener("change", handleAssetChange);
       els.assetB.addEventListener("change", handleAssetChange);
+      els.assetC.addEventListener("change", handleAssetChange);
       els.years.addEventListener("input", () => scheduleRender());
       els.weightSlider.addEventListener("input", () => setWeight(els.weightSlider.value));
       els.weightInput.addEventListener("input", () => setWeight(els.weightInput.value));
@@ -524,21 +540,17 @@
     }
 
     function handleAssetChange(event) {
-      if (els.assetA.value === els.assetB.value) {
-        const otherSelect = event.target === els.assetA ? els.assetB : els.assetA;
-        const replacement = Object.keys(ASSETS).find((key) => key !== event.target.value);
-        otherSelect.value = replacement;
-      }
+      enforceDistinctAssets(event.target);
       updateWeightLabels();
       scheduleRender();
     }
 
     function setWeight(rawValue) {
-      const value = clampInteger(rawValue, 0, 100, 50);
+      const value = clampInteger(rawValue, 0, 100, 0);
       els.weightSlider.value = value;
       els.weightInput.value = value;
       updateWeightLabels();
-      updateSelectedSummary();
+      scheduleRender();
     }
 
     function scheduleRender(prefixMessage) {
@@ -553,12 +565,40 @@
     function updateWeightLabels() {
       const a = ASSETS[els.assetA.value].label;
       const b = ASSETS[els.assetB.value].label;
-      const weightA = Number(els.weightInput.value);
-      const weightB = 100 - weightA;
+      const c = ASSETS[els.assetC.value].label;
+      const weightC = clampInteger(els.weightInput.value, 0, 100, 0);
+      const remaining = 100 - weightC;
       els.weightALabel.textContent = a;
       els.weightBLabel.textContent = b;
-      els.weightAValue.textContent = `${weightA}%`;
-      els.weightBValue.textContent = `${weightB}%`;
+      els.weightCLabel.textContent = c;
+      els.weightAValue.textContent = `0-${remaining}%`;
+      els.weightBValue.textContent = `${remaining}-0%`;
+      els.weightCValue.textContent = `${weightC}%`;
+    }
+
+    function enforceDistinctAssets(changedSelect) {
+      const selects = [els.assetA, els.assetB, els.assetC];
+      const keys = Object.keys(ASSETS);
+      const used = new Set();
+      selects.forEach((select) => {
+        if (select === changedSelect) used.add(select.value);
+      });
+      selects.forEach((select) => {
+        if (select === changedSelect) return;
+        if (used.has(select.value)) {
+          select.value = keys.find((key) => !used.has(key) && key !== changedSelect.value) || select.value;
+        }
+        used.add(select.value);
+      });
+      if (new Set(selects.map((select) => select.value)).size !== selects.length) {
+        selects.forEach((select, index) => {
+          if (index === 0) return;
+          const earlier = new Set(selects.slice(0, index).map((item) => item.value));
+          if (earlier.has(select.value)) {
+            select.value = keys.find((key) => !earlier.has(key) && !selects.slice(index + 1).some((item) => item.value === key)) || select.value;
+          }
+        });
+      }
     }
 
     async function loadAllData() {
@@ -727,23 +767,26 @@
 
       const assetA = els.assetA.value;
       const assetB = els.assetB.value;
-      if (assetA === assetB) {
-        setStatus("Select two different assets.", "bad");
+      const assetC = els.assetC.value;
+      if (new Set([assetA, assetB, assetC]).size !== 3) {
+        setStatus("Select three different assets.", "bad");
         return;
       }
 
       try {
         const isRebalanced = els.rebalancing.checked;
         const isMonthlyContribution = els.monthlyContributions.checked;
-        const results = calculateIqrSeries(assetA, assetB, years.value, isRebalanced, isMonthlyContribution);
+        const thirdWeight = clampInteger(els.weightInput.value, 0, 100, 0);
+        const results = calculateIqrSeries(assetA, assetB, assetC, thirdWeight, years.value, isRebalanced, isMonthlyContribution);
         state.lastResults = results;
         drawChart(results);
         updateSelectedSummary();
-        const range = commonMonthlyRange(assetA, assetB);
+        const range = commonMonthlyRange([assetA, assetB, assetC]);
         const modeText = state.dataMode === "fallback" ? "embedded monthly data" : "live data";
         const portfolioRule = isRebalanced ? "monthly rebalanced" : "buy-and-hold";
         const timingRule = isMonthlyContribution ? "monthly contributions, annualized IRR" : "lump sum, annualized CAGR";
-        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label}: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, ${portfolioRule}, ${timingRule}, using ${modeText}.`;
+        const remaining = 100 - thirdWeight;
+        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label} with ${ASSETS[assetC].label} fixed at ${thirdWeight}%: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, first/second range 0-${remaining}%, ${portfolioRule}, ${timingRule}, using ${modeText}.`;
         setStatus(prefixMessage ? `${prefixMessage} ${message}` : message, state.dataMode === "fallback" ? "warn" : "good");
       } catch (error) {
         state.lastResults = [];
@@ -762,34 +805,38 @@
       return { ok: true, value };
     }
 
-    function calculateIqrSeries(assetA, assetB, years, rebalanceMonthly, monthlyContributions) {
-      const aligned = alignMonthly(assetA, assetB);
+    function calculateIqrSeries(assetA, assetB, assetC, thirdWeight, years, rebalanceMonthly, monthlyContributions) {
+      const aligned = alignMonthlyAssets([assetA, assetB, assetC]);
       const monthsNeeded = years * 12;
       if (aligned.length <= monthsNeeded) {
         throw new Error(`Common monthly data is insufficient. ${years}-year rolling returns need at least ${monthsNeeded + 1} months.`);
       }
 
+      const remainingWeight = 100 - thirdWeight;
       const buyHoldPrefixes = monthlyContributions ? buildBuyHoldContributionPrefixes(aligned) : null;
       const results = [];
-      for (let weightA = 0; weightA <= 100; weightA += 1) {
+      for (let weightA = 0; weightA <= remainingWeight; weightA += 1) {
         const wa = weightA / 100;
-        const wb = 1 - wa;
+        const wb = (remainingWeight - weightA) / 100;
+        const wc = thirdWeight / 100;
+        const weights = [wa, wb, wc];
         const rebalancedPrefixes = monthlyContributions && rebalanceMonthly
-          ? buildRebalancedContributionPrefixes(aligned, wa, wb)
+          ? buildRebalancedContributionPrefixes(aligned, weights)
           : null;
         const rolling = [];
         for (let end = monthsNeeded; end < aligned.length; end += 1) {
           const start = end - monthsNeeded;
           const annualizedReturn = monthlyContributions
-            ? calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes)
-            : calculateLumpSumWindowCagr(aligned, start, end, wa, wb, years, rebalanceMonthly);
+            ? calculateContributionWindowIrr(aligned, start, end, weights, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes)
+            : calculateLumpSumWindowCagr(aligned, start, end, weights, years, rebalanceMonthly);
           if (Number.isFinite(annualizedReturn)) rolling.push(annualizedReturn);
         }
         if (!rolling.length) throw new Error("N-year rolling samples are insufficient.");
 
         results.push({
           weightA,
-          weightB: 100 - weightA,
+          weightB: remainingWeight - weightA,
+          weightC: thirdWeight,
           q1: quantile(rolling, 0.25),
           q3: quantile(rolling, 0.75),
           sampleCount: rolling.length
@@ -798,63 +845,63 @@
       return results;
     }
 
-    function calculateLumpSumWindowCagr(aligned, start, end, wa, wb, years, rebalanceMonthly) {
+    function calculateLumpSumWindowCagr(aligned, start, end, weights, years, rebalanceMonthly) {
       const totalReturn = rebalanceMonthly
-        ? calculateRebalancedWindowReturn(aligned, start, end, wa, wb)
-        : calculateBuyHoldWindowReturn(aligned, start, end, wa, wb);
+        ? calculateRebalancedWindowReturn(aligned, start, end, weights)
+        : calculateBuyHoldWindowReturn(aligned, start, end, weights);
       return Math.pow(totalReturn, 1 / years) - 1;
     }
 
-    function calculateBuyHoldWindowReturn(aligned, start, end, wa, wb) {
+    function calculateBuyHoldWindowReturn(aligned, start, end, weights) {
       const startRow = aligned[start];
       const endRow = aligned[end];
-      return wa * (endRow.a / startRow.a) + wb * (endRow.b / startRow.b);
+      return weights.reduce((sum, weight, index) => sum + weight * (endRow.values[index] / startRow.values[index]), 0);
     }
 
-    function calculateRebalancedWindowReturn(aligned, start, end, wa, wb) {
+    function calculateRebalancedWindowReturn(aligned, start, end, weights) {
       let portfolio = 1;
       for (let i = start + 1; i <= end; i += 1) {
         const prev = aligned[i - 1];
         const curr = aligned[i];
-        const returnA = curr.a / prev.a - 1;
-        const returnB = curr.b / prev.b - 1;
-        portfolio *= 1 + wa * returnA + wb * returnB;
+        const monthReturn = weights.reduce((sum, weight, index) => sum + weight * (curr.values[index] / prev.values[index] - 1), 0);
+        portfolio *= 1 + monthReturn;
       }
       return portfolio;
     }
 
-    function calculateContributionWindowIrr(aligned, start, end, wa, wb, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes) {
+    function calculateContributionWindowIrr(aligned, start, end, weights, rebalanceMonthly, buyHoldPrefixes, rebalancedPrefixes) {
       const terminalValue = rebalanceMonthly
         ? calculateRebalancedContributionTerminal(start, end, rebalancedPrefixes)
-        : calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb, buyHoldPrefixes);
+        : calculateBuyHoldContributionTerminal(aligned, start, end, weights, buyHoldPrefixes);
       const monthCount = end - start;
       const monthlyRate = calculateMonthlyContributionIrr(terminalValue, monthCount);
       return Number.isFinite(monthlyRate) ? Math.pow(1 + monthlyRate, 12) - 1 : NaN;
     }
 
     function buildBuyHoldContributionPrefixes(aligned) {
-      const inverseA = [0];
-      const inverseB = [0];
+      const assetCount = aligned[0].values.length;
+      const inverseByAsset = Array.from({ length: assetCount }, () => [0]);
       for (let i = 0; i < aligned.length; i += 1) {
-        inverseA.push(inverseA[i] + 1 / aligned[i].a);
-        inverseB.push(inverseB[i] + 1 / aligned[i].b);
+        for (let assetIndex = 0; assetIndex < assetCount; assetIndex += 1) {
+          inverseByAsset[assetIndex].push(inverseByAsset[assetIndex][i] + 1 / aligned[i].values[assetIndex]);
+        }
       }
-      return { inverseA, inverseB };
+      return { inverseByAsset };
     }
 
-    function calculateBuyHoldContributionTerminal(aligned, start, end, wa, wb, prefixes) {
-      const quantityA = prefixes.inverseA[end] - prefixes.inverseA[start];
-      const quantityB = prefixes.inverseB[end] - prefixes.inverseB[start];
-      return wa * aligned[end].a * quantityA + wb * aligned[end].b * quantityB;
+    function calculateBuyHoldContributionTerminal(aligned, start, end, weights, prefixes) {
+      return weights.reduce((sum, weight, index) => {
+        const quantity = prefixes.inverseByAsset[index][end] - prefixes.inverseByAsset[index][start];
+        return sum + weight * aligned[end].values[index] * quantity;
+      }, 0);
     }
 
-    function buildRebalancedContributionPrefixes(aligned, wa, wb) {
+    function buildRebalancedContributionPrefixes(aligned, weights) {
       const cumulative = [1];
       const inverseCumulative = [0];
       for (let i = 0; i < aligned.length - 1; i += 1) {
-        const returnA = aligned[i + 1].a / aligned[i].a - 1;
-        const returnB = aligned[i + 1].b / aligned[i].b - 1;
-        cumulative.push(cumulative[i] * (1 + wa * returnA + wb * returnB));
+        const monthReturn = weights.reduce((sum, weight, index) => sum + weight * (aligned[i + 1].values[index] / aligned[i].values[index] - 1), 0);
+        cumulative.push(cumulative[i] * (1 + monthReturn));
         inverseCumulative.push(inverseCumulative[i] + 1 / cumulative[i]);
       }
       return { cumulative, inverseCumulative };
@@ -896,14 +943,14 @@
       return (1 + rate) * (growth - 1) / rate;
     }
 
-    function alignMonthly(assetA, assetB) {
-      const a = state.monthly[assetA] || [];
-      const b = state.monthly[assetB] || [];
-      const bMap = new Map(b.map((row) => [row.date.slice(0, 7), row]));
-      const aligned = a
-        .map((rowA) => {
-          const rowB = bMap.get(rowA.date.slice(0, 7));
-          return rowB ? { date: rowA.date.slice(0, 7), a: rowA.value, b: rowB.value } : null;
+    function alignMonthlyAssets(assetKeys) {
+      const series = assetKeys.map((key) => state.monthly[key] || []);
+      const maps = series.map((rows) => new Map(rows.map((row) => [row.date.slice(0, 7), row])));
+      const aligned = series[0]
+        .map((row) => {
+          const month = row.date.slice(0, 7);
+          const values = maps.map((map) => map.get(month)).map((match) => match && match.value);
+          return values.every((value) => Number.isFinite(value)) ? { date: month, values } : null;
         })
         .filter(Boolean)
         .sort((x, y) => x.date.localeCompare(y.date));
@@ -911,8 +958,8 @@
       return aligned;
     }
 
-    function commonMonthlyRange(assetA, assetB) {
-      const aligned = alignMonthly(assetA, assetB);
+    function commonMonthlyRange(assetKeys) {
+      const aligned = alignMonthlyAssets(assetKeys);
       return { start: aligned[0].date, end: aligned[aligned.length - 1].date };
     }
 
@@ -944,7 +991,8 @@
       const padding = Math.max(0.015, (maxY - minY) * 0.14);
       const yMin = Math.floor((minY - padding) * 100) / 100;
       const yMax = Math.ceil((maxY + padding) * 100) / 100;
-      const x = (weightA) => margin.left + (weightA / 100) * plotW;
+      const xMax = Math.max(...results.map((d) => d.weightA));
+      const x = (weightA) => margin.left + (xMax > 0 ? weightA / xMax : 0.5) * plotW;
       const y = (value) => margin.top + (1 - (value - yMin) / (yMax - yMin || 1)) * plotH;
       const ns = "http://www.w3.org/2000/svg";
       const svg = els.chart;
@@ -966,7 +1014,7 @@
         make("text", { class: "tick-label", x: margin.left - 10, y: yy + 4, "text-anchor": "end" }, formatPercent(tick));
       });
 
-      [0, 25, 50, 75, 100].forEach((tick) => {
+      makeWeightTicks(xMax).forEach((tick) => {
         const xx = x(tick);
         make("line", { class: "grid", x1: xx, x2: xx, y1: margin.top, y2: height - margin.bottom });
         make("text", { class: "tick-label", x: xx, y: height - margin.bottom + 22, "text-anchor": "middle" }, `${tick}%`);
@@ -987,20 +1035,17 @@
       make("path", { d: q1Path, fill: "none", stroke: "#1769aa", "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" });
       make("path", { d: q3Path, fill: "none", stroke: "#d1495b", "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" });
 
-      make("text", { class: "axis-label", x: width / 2, y: height - 20, "text-anchor": "middle" }, `${ASSETS[els.assetA.value].label} weight`);
+      make("text", { class: "axis-label", x: width / 2, y: height - 20, "text-anchor": "middle" }, `${ASSETS[els.assetA.value].label} weight (0-${xMax}%)`);
       const yLabel = make("text", { class: "axis-label", x: 18, y: height / 2, "text-anchor": "middle", transform: `rotate(-90 18 ${height / 2})` }, "Annualized return");
       yLabel.setAttribute("dominant-baseline", "middle");
 
-      make("text", { class: "tick-label", x: margin.left, y: height - margin.bottom + 44, "text-anchor": "start" }, `${ASSETS[els.assetB.value].label} 100%`);
-      make("text", { class: "tick-label", x: width - margin.right, y: height - margin.bottom + 44, "text-anchor": "end" }, `${ASSETS[els.assetA.value].label} 100%`);
+      make("text", { class: "tick-label", x: margin.left, y: height - margin.bottom + 44, "text-anchor": "start" }, `${ASSETS[els.assetB.value].label} ${xMax}% + ${ASSETS[els.assetC.value].label} ${results[0].weightC}%`);
+      make("text", { class: "tick-label", x: width - margin.right, y: height - margin.bottom + 44, "text-anchor": "end" }, `${ASSETS[els.assetA.value].label} ${xMax}% + ${ASSETS[els.assetC.value].label} ${results[0].weightC}%`);
+    }
 
-      const selected = results[Number(els.weightInput.value)];
-      if (selected) {
-        const xx = x(selected.weightA);
-        make("line", { x1: xx, x2: xx, y1: margin.top, y2: height - margin.bottom, stroke: "#1f2937", "stroke-width": 1.5, "stroke-dasharray": "4 4" });
-        make("circle", { cx: xx, cy: y(selected.q1), r: 4, fill: "#1769aa" });
-        make("circle", { cx: xx, cy: y(selected.q3), r: 4, fill: "#d1495b" });
-      }
+    function makeWeightTicks(maxWeight) {
+      if (maxWeight <= 0) return [0];
+      return Array.from(new Set([0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxWeight * ratio))));
     }
 
     function makeTicks(min, max, count) {
@@ -1013,12 +1058,10 @@
     function updateSelectedSummary() {
       updateWeightLabels();
       if (!state.lastResults.length) return;
-      const selected = state.lastResults[Number(els.weightInput.value)];
-      if (!selected) return;
+      const bestQ1 = state.lastResults.reduce((best, item) => item.q1 > best.q1 ? item : best, state.lastResults[0]);
       const rule = els.rebalancing.checked ? "Monthly rebalanced" : "Buy & hold";
       const timing = els.monthlyContributions.checked ? "Monthly contributions" : "Lump sum";
-      els.chartTitle.textContent = `${ASSETS[els.assetA.value].label} ${selected.weightA}% / ${ASSETS[els.assetB.value].label} ${selected.weightB}% [${rule}, ${timing}]: Q1 ${formatPercent(selected.q1)}, Q3 ${formatPercent(selected.q3)}`;
-      drawChart(state.lastResults);
+      els.chartTitle.textContent = `${ASSETS[els.assetC.value].label} ${bestQ1.weightC}% fixed; best Q1 at ${ASSETS[els.assetA.value].label} ${bestQ1.weightA}% / ${ASSETS[els.assetB.value].label} ${bestQ1.weightB}% [${rule}, ${timing}]: Q1 ${formatPercent(bestQ1.q1)}, Q3 ${formatPercent(bestQ1.q3)}`;
     }
 
     function renderDataSummary() {

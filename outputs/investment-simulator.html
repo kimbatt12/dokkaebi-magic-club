@@ -131,6 +131,26 @@
       accent-color: var(--accent);
     }
 
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #fff;
+      padding: 0 10px;
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .checkbox-row input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
     .weights {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -380,6 +400,14 @@
             </div>
           </div>
 
+          <div class="field">
+            <label for="rebalancing">Portfolio rule</label>
+            <label class="checkbox-row">
+              <input id="rebalancing" type="checkbox">
+              Rebalancing
+            </label>
+          </div>
+
           <div class="weights">
             <div class="metric">
               <div class="name" id="weightALabel">SPY</div>
@@ -448,6 +476,7 @@
       weightBLabel: document.getElementById("weightBLabel"),
       weightAValue: document.getElementById("weightAValue"),
       weightBValue: document.getElementById("weightBValue"),
+      rebalancing: document.getElementById("rebalancing"),
       refreshButton: document.getElementById("refreshButton"),
       status: document.getElementById("status"),
       dataSummary: document.getElementById("dataSummary"),
@@ -472,6 +501,7 @@
       els.years.addEventListener("input", renderFromInputs);
       els.weightSlider.addEventListener("input", () => setWeight(els.weightSlider.value));
       els.weightInput.addEventListener("input", () => setWeight(els.weightInput.value));
+      els.rebalancing.addEventListener("change", renderFromInputs);
       els.refreshButton.addEventListener("click", loadAllData);
       window.addEventListener("resize", () => {
         if (state.lastResults.length) drawChart(state.lastResults);
@@ -646,13 +676,15 @@
       }
 
       try {
-        const results = calculateIqrSeries(assetA, assetB, years.value);
+        const isRebalanced = els.rebalancing.checked;
+        const results = calculateIqrSeries(assetA, assetB, years.value, isRebalanced);
         state.lastResults = results;
         drawChart(results);
         updateSelectedSummary();
         const range = commonMonthlyRange(assetA, assetB);
         const modeText = state.dataMode === "fallback" ? "embedded monthly data" : "live data";
-        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label}: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, using ${modeText}.`;
+        const portfolioRule = isRebalanced ? "monthly rebalanced" : "buy-and-hold";
+        const message = `${ASSETS[assetA].label} / ${ASSETS[assetB].label}: ${range.start} to ${range.end}, ${results[0].sampleCount} rolling samples for ${years.value} years, ${portfolioRule}, using ${modeText}.`;
         setStatus(prefixMessage ? `${prefixMessage} ${message}` : message, state.dataMode === "fallback" ? "warn" : "good");
       } catch (error) {
         state.lastResults = [];
@@ -671,7 +703,7 @@
       return { ok: true, value };
     }
 
-    function calculateIqrSeries(assetA, assetB, years) {
+    function calculateIqrSeries(assetA, assetB, years, rebalanceMonthly) {
       const aligned = alignMonthly(assetA, assetB);
       const monthsNeeded = years * 12;
       if (aligned.length <= monthsNeeded) {
@@ -682,20 +714,13 @@
       for (let weightA = 0; weightA <= 100; weightA += 1) {
         const wa = weightA / 100;
         const wb = 1 - wa;
-        const portfolio = [{ date: aligned[0].date, value: 100 }];
-        for (let i = 1; i < aligned.length; i += 1) {
-          const prev = aligned[i - 1];
-          const curr = aligned[i];
-          const returnA = curr.a / prev.a - 1;
-          const returnB = curr.b / prev.b - 1;
-          const nextValue = portfolio[i - 1].value * (1 + wa * returnA + wb * returnB);
-          portfolio.push({ date: curr.date, value: nextValue });
-        }
-
         const rolling = [];
-        for (let end = monthsNeeded; end < portfolio.length; end += 1) {
+        for (let end = monthsNeeded; end < aligned.length; end += 1) {
           const start = end - monthsNeeded;
-          const cagr = Math.pow(portfolio[end].value / portfolio[start].value, 1 / years) - 1;
+          const totalReturn = rebalanceMonthly
+            ? calculateRebalancedWindowReturn(aligned, start, end, wa, wb)
+            : calculateBuyHoldWindowReturn(aligned, start, end, wa, wb);
+          const cagr = Math.pow(totalReturn, 1 / years) - 1;
           if (Number.isFinite(cagr)) rolling.push(cagr);
         }
         if (!rolling.length) throw new Error("N-year rolling samples are insufficient.");
@@ -709,6 +734,24 @@
         });
       }
       return results;
+    }
+
+    function calculateBuyHoldWindowReturn(aligned, start, end, wa, wb) {
+      const startRow = aligned[start];
+      const endRow = aligned[end];
+      return wa * (endRow.a / startRow.a) + wb * (endRow.b / startRow.b);
+    }
+
+    function calculateRebalancedWindowReturn(aligned, start, end, wa, wb) {
+      let portfolio = 1;
+      for (let i = start + 1; i <= end; i += 1) {
+        const prev = aligned[i - 1];
+        const curr = aligned[i];
+        const returnA = curr.a / prev.a - 1;
+        const returnB = curr.b / prev.b - 1;
+        portfolio *= 1 + wa * returnA + wb * returnB;
+      }
+      return portfolio;
     }
 
     function alignMonthly(assetA, assetB) {
@@ -830,7 +873,8 @@
       if (!state.lastResults.length) return;
       const selected = state.lastResults[Number(els.weightInput.value)];
       if (!selected) return;
-      els.chartTitle.textContent = `${ASSETS[els.assetA.value].label} ${selected.weightA}% / ${ASSETS[els.assetB.value].label} ${selected.weightB}%: Q1 ${formatPercent(selected.q1)}, Q3 ${formatPercent(selected.q3)}`;
+      const rule = els.rebalancing.checked ? "Monthly rebalanced" : "Buy & hold";
+      els.chartTitle.textContent = `${ASSETS[els.assetA.value].label} ${selected.weightA}% / ${ASSETS[els.assetB.value].label} ${selected.weightB}% [${rule}]: Q1 ${formatPercent(selected.q1)}, Q3 ${formatPercent(selected.q3)}`;
       drawChart(state.lastResults);
     }
 
